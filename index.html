@@ -471,9 +471,9 @@ function renderResults(s) {
     tagsHtml += `<div class="ptag days">⏱ ${days} dias de tratamento · ${wks} semanas</div>`;
     if (currentPoint.actualTWL !== undefined) {
       const diff = currentPoint.diffFromMedian;
-      if (diff >= 1)       tagsHtml += `<div class="ptag above">🟢 Acima do esperado</div>`;
-      else if (diff <= -1) tagsHtml += `<div class="ptag below">🔴 Abaixo do esperado</div>`;
-      else                 tagsHtml += `<div class="ptag on">🔵 Dentro do esperado</div>`;
+      if (diff >= 1)       tagsHtml += `<div class="ptag above">🟢 Acima da média do estudo</div>`;
+      else if (diff <= -1) tagsHtml += `<div class="ptag below">🔴 Abaixo da média do estudo</div>`;
+      else                 tagsHtml += `<div class="ptag on">🔵 Na média do estudo</div>`;
     }
   }
   document.getElementById('patientTags').innerHTML = tagsHtml;
@@ -483,18 +483,13 @@ function renderResults(s) {
   if (currentPoint && currentPoint.actualTWL !== undefined) {
     const cp = currentPoint;
     const diff = cp.diffFromMedian;
-    const pct  = cp.percentile;
-    const absDiff = Math.abs(diff).toFixed(1);
-    const diffTarget = cp.diffFromTarget.toFixed(1);
+    const kgLost = (lastState.weight - cp.actualWeight).toFixed(1);
 
+    // Título e cor — neutros, sem sugestão de titulação
     let cls, icon, titleStr;
-    const vsAvg = diff >= 1 ? `+${absDiff}% acima da média` : diff <= -1 ? `${absDiff}% abaixo da média` : `na média esperada`;
-    if (diff >= 1)       { cls='above';  icon='🟢'; titleStr=`Acima da média esperada`; }
-    else if (diff <= -1) { cls='below';  icon='🔴'; titleStr=`Abaixo da média esperada`; }
-    else                 { cls='median'; icon='🔵'; titleStr=`Dentro da média esperada`; }
-
-    const metaFalta = Math.max(0, cp.diffFromTarget).toFixed(1);
-    const vsAvgSign = diff >= 0 ? `+${Math.abs(diff).toFixed(1)}%` : `-${Math.abs(diff).toFixed(1)}%`;
+    if (diff >= 1)       { cls='above';  icon='🟢'; titleStr='Evolução acima da média do estudo'; }
+    else if (diff <= -1) { cls='below';  icon='🔴'; titleStr='Evolução abaixo da média do estudo'; }
+    else                 { cls='median'; icon='🔵'; titleStr='Evolução dentro da média do estudo'; }
 
     perfEl.innerHTML = `<div class="perf-tag ${cls}">
       <div class="perf-title">${icon} ${titleStr}</div>
@@ -502,22 +497,15 @@ function renderResults(s) {
         <div class="perf-item">
           <span class="pi-label">Perda de peso até o momento</span>
           <span class="pi-value">${cp.actualTWL.toFixed(1)}%</span>
-          <span class="pi-sub">${(lastState.weight - cp.actualWeight).toFixed(1)} kg perdidos</span>
+          <span class="pi-sub">${kgLost} kg · desde o início do tratamento</span>
         </div>
         <div class="perf-item">
-          <span class="pi-label">Perda média esperada para o período</span>
+          <span class="pi-label">Média do estudo para este período</span>
           <span class="pi-value">${cp.twlExpected.toFixed(1)}%</span>
-          <span class="pi-sub">Referência SURMOUNT-1</span>
+          <span class="pi-sub">Referência SURMOUNT-1 · mesma dose e semana</span>
         </div>
-        <div class="perf-item">
-          <span class="pi-label">Resposta vs. média esperada</span>
-          <span class="pi-value">${vsAvgSign}</span>
-          <span class="pi-sub">${diff >= 1 ? 'Respondedor acima da média' : diff <= -1 ? 'Respondedor abaixo da média' : 'Alinhado com a média'}</span>
-        </div>
-        <div class="perf-item">
-          <span class="pi-label">Faltante para meta em 72 semanas</span>
-          <span class="pi-value">${metaFalta}%</span>
-          <span class="pi-sub">${metaFalta > 0 ? 'Ainda há espaço para progressão' : '✅ Meta atingida!'}</span>
+        <div class="perf-item full" style="margin-top:8px; padding-top:10px; border-top:1px solid currentColor; opacity:.7; font-size:.72rem; line-height:1.5;">
+          ⚠️ <strong>Nota:</strong> Esta comparação é informativa e reflete a variabilidade natural de resposta entre pacientes no estudo clínico SURMOUNT-1. Resultados individuais dependem de múltiplos fatores. Decisões sobre ajuste de tratamento devem ser tomadas exclusivamente pelo médico responsável, com base na avaliação clínica completa do paciente.
         </div>
       </div>
     </div>`;
