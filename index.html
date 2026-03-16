@@ -98,17 +98,7 @@ input:focus, select:focus { outline:none; border-color:var(--red); box-shadow:0 
 .ptag.above { background:#eff6ff; border:1px solid #bfdbfe; color:#1d4ed8; }
 
 /* PERFORMANCE TAG */
-.perf-tag { border-radius:var(--radius-sm); padding:14px 18px; margin-bottom:16px; font-size:.84rem; line-height:1.4; border:2px solid; }
-.perf-tag.above  { background:#f0fdf4; border-color:#16a34a; color:#14532d; }
-.perf-tag.median { background:#eff6ff; border-color:#2563eb; color:#1e3a8a; }
-.perf-tag.below  { background:#fff1f2; border-color:#C8102E; color:#9e0c24; }
-.perf-tag .perf-title { font-family:'Plus Jakarta Sans',sans-serif; font-size:.95rem; font-weight:800; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
-.perf-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; }
-.perf-item { display:flex; flex-direction:column; gap:2px; }
-.perf-item .pi-label { font-size:.65rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; opacity:.65; }
-.perf-item .pi-value { font-family:'Plus Jakarta Sans',sans-serif; font-size:1.35rem; font-weight:800; line-height:1; }
-.perf-item .pi-sub { font-size:.7rem; opacity:.7; margin-top:1px; }
-.perf-item.full { grid-column:1/-1; }
+
 
 /* CHART TABS */
 .chart-tabs { display:flex; gap:7px; margin-bottom:14px; }
@@ -260,8 +250,6 @@ footer { text-align:center; padding:18px; font-size:.7rem; color:var(--muted); b
           <div id="resultContent" style="display:none">
             <!-- Tags do paciente -->
             <div class="patient-tag-strip" id="patientTags"></div>
-            <!-- Tag de performance -->
-            <div id="perfTag" style="display:none"></div>
             <!-- Summary cards -->
             <div class="summary-row" id="summaryCards"></div>
             <!-- Chart -->
@@ -478,41 +466,6 @@ function renderResults(s) {
   }
   document.getElementById('patientTags').innerHTML = tagsHtml;
 
-  // ── PERFORMANCE TAG ───────────────────────────────────────────────
-  const perfEl = document.getElementById('perfTag');
-  if (currentPoint && currentPoint.actualTWL !== undefined) {
-    const cp = currentPoint;
-    const diff = cp.diffFromMedian;
-    const kgLost = (lastState.weight - cp.actualWeight).toFixed(1);
-
-    // Título e cor — neutros, sem sugestão de titulação
-    let cls, icon, titleStr;
-    if (diff >= 1)       { cls='above';  icon='🟢'; titleStr='Evolução acima da média do estudo'; }
-    else if (diff <= -1) { cls='below';  icon='🔴'; titleStr='Evolução abaixo da média do estudo'; }
-    else                 { cls='median'; icon='🔵'; titleStr='Evolução dentro da média do estudo'; }
-
-    perfEl.innerHTML = `<div class="perf-tag ${cls}">
-      <div class="perf-title">${icon} ${titleStr}</div>
-      <div class="perf-grid">
-        <div class="perf-item">
-          <span class="pi-label">Perda de peso até o momento</span>
-          <span class="pi-value">${cp.actualTWL.toFixed(1)}%</span>
-          <span class="pi-sub">${kgLost} kg · desde o início do tratamento</span>
-        </div>
-        <div class="perf-item">
-          <span class="pi-label">Média do estudo para este período</span>
-          <span class="pi-value">${cp.twlExpected.toFixed(1)}%</span>
-          <span class="pi-sub">Referência SURMOUNT-1 · mesma dose e semana</span>
-        </div>
-        <div class="perf-item full" style="margin-top:8px; padding-top:10px; border-top:1px solid currentColor; opacity:.7; font-size:.72rem; line-height:1.5;">
-          ⚠️ <strong>Nota:</strong> Esta comparação é informativa e reflete a variabilidade natural de resposta entre pacientes no estudo clínico SURMOUNT-1. Resultados individuais dependem de múltiplos fatores. Decisões sobre ajuste de tratamento devem ser tomadas exclusivamente pelo médico responsável, com base na avaliação clínica completa do paciente.
-        </div>
-      </div>
-    </div>`;
-    perfEl.style.display = 'block';
-  } else {
-    perfEl.style.display = 'none';
-  }
 
   // ── SUMMARY CARDS ─────────────────────────────────────────────────
   document.getElementById('summaryCards').innerHTML = `
@@ -794,95 +747,185 @@ async function exportPDF() {
   btn.textContent = '⏳ Gerando PDF...';
   btn.disabled = true;
 
-  await new Promise(r => setTimeout(r, 400));
+  // Aguarda qualquer animação pendente
+  await new Promise(r => setTimeout(r, 200));
 
   const { jsPDF } = window.jspdf;
-  const pW = 297, pH = 210; // A4 landscape mm
-  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-  const margin = 12;
-  const contentW = pW - margin*2;
   const dateStr = new Date().toLocaleDateString('pt-BR');
 
-  // ── Função helper: captura um elemento e encaixa no PDF ──────────────
-  async function captureEl(el, yOffset, maxH) {
-    // Forçar largura fixa para captura limpa
-    const origStyle = el.style.cssText;
-    el.style.width = '1100px';
-    el.style.maxWidth = '1100px';
-    await new Promise(r => setTimeout(r, 80));
-    const canvas = await html2canvas(el, {
-      scale: 1.8, useCORS: true, backgroundColor: '#ffffff',
-      width: 1100, windowWidth: 1200
+  // ── Monta HTML da página 1 num iframe oculto ─────────────────────────────
+  // Isso evita QUALQUER perturbação no layout da página atual
+
+  async function captureSection(htmlContent, widthPx) {
+    return new Promise(resolve => {
+      const iframe = document.createElement('iframe');
+      iframe.style.cssText = `position:fixed;left:-9999px;top:-9999px;width:${widthPx}px;border:none;`;
+      document.body.appendChild(iframe);
+
+      iframe.onload = async () => {
+        try {
+          // Injecta o HTML no iframe
+          iframe.contentDocument.open();
+          iframe.contentDocument.write(htmlContent);
+          iframe.contentDocument.close();
+
+          // Aguarda fontes e renders
+          await new Promise(r => setTimeout(r, 600));
+
+          const body = iframe.contentDocument.body;
+          const canvas = await html2canvas(body, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: '#ffffff',
+            width: widthPx,
+            windowWidth: widthPx,
+            scrollX: 0, scrollY: 0
+          });
+          document.body.removeChild(iframe);
+          resolve(canvas);
+        } catch(e) {
+          document.body.removeChild(iframe);
+          resolve(null);
+        }
+      };
+      iframe.src = 'about:blank';
     });
-    el.style.cssText = origStyle;
+  }
+
+  // ── Coleta dados do DOM atual ─────────────────────────────────────────────
+  const tagsHTML    = document.getElementById('patientTags')?.innerHTML || '';
+  const cardsHTML   = document.getElementById('summaryCards')?.innerHTML || '';
+  const tableHTML   = document.getElementById('predTbody')?.innerHTML || '';
+
+  // Captura o canvas do gráfico como imagem diretamente (Chart.js já renderizou)
+  const chartCanvas = document.getElementById('mainChart');
+  const chartImgSrc = chartCanvas ? chartCanvas.toDataURL('image/png') : null;
+
+  // ── Estilos base compartilhados ───────────────────────────────────────────
+  const baseStyles = `
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=DM+Sans:wght@400;500&display=swap');
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:'DM Sans',sans-serif; background:#fff; color:#1a1a2e; padding:0; }
+    .section { margin-bottom:16px; }
+    /* Tags */
+    .patient-tag-strip { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .ptag { display:inline-flex; align-items:center; gap:5px; border-radius:20px; padding:5px 13px; font-size:.72rem; font-weight:600; white-space:nowrap; }
+    .ptag.date  { background:#f0f4ff; border:1px solid #bfdbfe; color:#1d4ed8; }
+    .ptag.days  { background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; }
+    .ptag.below { background:#fff1f2; border:1px solid #fecdd3; color:#C8102E; }
+    .ptag.on    { background:#f0fdf4; border:1px solid #86efac; color:#15803d; }
+    .ptag.above { background:#eff6ff; border:1px solid #bfdbfe; color:#1d4ed8; }
+    /* Summary cards */
+    .summary-row { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px; }
+    .stat-card { background:#f6f7fb; border-radius:10px; padding:13px 15px; border:1px solid #e2e4ef; }
+    .stat-card.accent { background:linear-gradient(135deg,#C8102E,#7a0619); border-color:transparent; }
+    .stat-label { font-size:.58rem; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:#9ca3af; margin-bottom:4px; white-space:nowrap; }
+    .stat-card.accent .stat-label { color:rgba(255,255,255,.72); }
+    .stat-value { font-family:'Plus Jakarta Sans',sans-serif; font-size:1.55rem; font-weight:800; color:#1a1a2e; line-height:1; }
+    .stat-card.accent .stat-value { color:#fff; }
+    .stat-sub { font-size:.65rem; color:#9ca3af; margin-top:2px; }
+    .stat-card.accent .stat-sub { color:rgba(255,255,255,.65); }
+    /* Table */
+    table { width:100%; border-collapse:collapse; font-size:.8rem; }
+    thead tr { background:#9e0c24; }
+    th { text-align:left; padding:10px 14px; font-family:'Plus Jakarta Sans',sans-serif; font-size:.72rem; font-weight:700; color:#fff; white-space:nowrap; }
+    td { padding:9px 14px; border-bottom:1px solid #e2e4ef; color:#1a1a2e; }
+    tr:last-child td { border-bottom:none; }
+    tbody tr:nth-child(even) td { background:#fafbff; }
+    td:first-child { font-weight:700; }
+    .td-loss { font-weight:600; color:#4f46e5; }
+    .td-iqr { color:#b0b3c6; }
+    /* Disclaimer */
+    .disclaimer { background:#fffbeb; border:1.5px solid #fbbf24; border-radius:8px; padding:10px 14px; font-size:.68rem; color:#78350f; line-height:1.5; margin-top:12px; }
+  `;
+
+  // ── Página 1: tags + perf + cards + gráfico ───────────────────────────────
+  const page1HTML = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <style>${baseStyles}
+      body { padding: 20px 24px; }
+      .chart-img { width:100%; height:auto; display:block; margin-top:4px; border-radius:8px; }
+      .header-bar { background:linear-gradient(135deg,#C8102E,#7a0619); color:#fff; padding:10px 16px; border-radius:8px; margin-bottom:14px; }
+      .header-bar h1 { font-family:'Plus Jakarta Sans',sans-serif; font-size:.95rem; font-weight:800; }
+      .header-bar p  { font-size:.65rem; opacity:.8; margin-top:2px; }
+    </style>
+  </head><body>
+    <div class="header-bar">
+      <h1>🏥 Predição de Perda de Peso — Tirzepatida</h1>
+      <p>SURMOUNT-1  ·  Jastreboff et al., NEJM 2022  ·  Gerado em ${dateStr}  ·  Uso exclusivo para profissionais de saúde</p>
+    </div>
+    <div class="section">
+      <div class="patient-tag-strip">${tagsHTML}</div>
+    </div>
+    <div class="section">
+      <div class="summary-row">${cardsHTML}</div>
+    </div>
+    ${chartImgSrc ? `<img class="chart-img" src="${chartImgSrc}">` : ''}
+  </body></html>`;
+
+  // ── Página 2: tabela ──────────────────────────────────────────────────────
+  const page2HTML = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <style>${baseStyles}
+      body { padding: 20px 24px; }
+      .header-bar { background:linear-gradient(135deg,#C8102E,#7a0619); color:#fff; padding:10px 16px; border-radius:8px; margin-bottom:14px; }
+      .header-bar h1 { font-family:'Plus Jakarta Sans',sans-serif; font-size:.95rem; font-weight:800; }
+      .header-bar p  { font-size:.65rem; opacity:.8; margin-top:2px; }
+      .card { background:#fff; border:1px solid #e2e4ef; border-radius:12px; overflow:hidden; }
+      .card-head { padding:12px 18px; border-bottom:1px solid #e2e4ef; font-family:'Plus Jakarta Sans',sans-serif; font-size:.85rem; font-weight:700; }
+    </style>
+  </head><body>
+    <div class="header-bar">
+      <h1>📋 Predições Detalhadas — Trajetória de 72 Semanas</h1>
+      <p>Gerado em ${dateStr}</p>
+    </div>
+    <div class="card">
+      <div class="card-head">Tabela de Predições por Semana</div>
+      <table>
+        <thead><tr>
+          <th>Semana</th><th>Peso previsto (kg)</th><th>IMC (kg/m²)</th>
+          <th>Perda prevista (%)</th><th>Faixa IIQ (kg)</th><th>Fase</th>
+        </tr></thead>
+        <tbody>${tableHTML}</tbody>
+      </table>
+    </div>
+    <div class="disclaimer">
+      ⚠️ <strong>Aviso:</strong> Predições baseadas em dados populacionais do SURMOUNT-1. Não substituem avaliação médica individualizada. IIQ = Intervalo Interquartil (P25–P75 observados no trial).
+    </div>
+  </body></html>`;
+
+  // ── Captura as duas páginas sem tocar no DOM principal ────────────────────
+  const CAPTURE_WIDTH = 1200;
+
+  const [canvas1, canvas2] = await Promise.all([
+    captureSection(page1HTML, CAPTURE_WIDTH),
+    captureSection(page2HTML, CAPTURE_WIDTH)
+  ]);
+
+  // ── Monta PDF ─────────────────────────────────────────────────────────────
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pW = 297, pH = 210;
+  const margin = 8;
+  const cW = pW - margin * 2;
+
+  function addCanvasToPDF(canvas, pageNum, totalPages) {
+    if (!canvas) return;
     const imgData = canvas.toDataURL('image/png');
     const ratio = canvas.width / canvas.height;
-    const imgH = Math.min(maxH, contentW / ratio);
-    pdf.addImage(imgData, 'PNG', margin, yOffset, contentW, imgH);
-    return imgH;
+    const imgH = Math.min(pH - margin * 2, cW / ratio);
+    pdf.addImage(imgData, 'PNG', margin, margin, cW, imgH);
+    // Rodapé
+    pdf.setFontSize(7); pdf.setTextColor(160); pdf.setFont('helvetica','normal');
+    pdf.text(
+      `Página ${pageNum} de ${totalPages}  ·  SURMOUNT-1  ·  Jastreboff et al., NEJM 2022  ·  Uso exclusivo para profissionais de saúde`,
+      pW / 2, pH - 3, { align: 'center' }
+    );
   }
 
-  // ── PÁGINA 1: header + tags + perf card + summary cards + gráfico ───
-  // Header vermelho
-  pdf.setFillColor(200, 16, 46);
-  pdf.rect(0, 0, pW, 18, 'F');
-  pdf.setFontSize(11); pdf.setFont('helvetica','bold'); pdf.setTextColor(255,255,255);
-  pdf.text('Calculadora de Predição de Perda de Peso — Tirzepatida', margin, 12);
-  pdf.setFontSize(7.5); pdf.setFont('helvetica','normal');
-  pdf.text(`Gerado em ${dateStr}  ·  SURMOUNT-1  ·  Jastreboff et al., NEJM 2022  ·  Uso exclusivo para profissionais de saúde`, pW - margin, 12, { align:'right' });
-
-  let yPos = 22;
-
-  // Tags do paciente
-  const tagsEl = document.getElementById('patientTags');
-  if (tagsEl && tagsEl.children.length > 0) {
-    const hT = await captureEl(tagsEl, yPos, 20);
-    yPos += hT + 4;
-  }
-
-  // Performance card
-  const perfTagEl = document.getElementById('perfTag');
-  if (perfTagEl && perfTagEl.style.display !== 'none') {
-    const hP = await captureEl(perfTagEl.firstElementChild || perfTagEl, yPos, 50);
-    yPos += hP + 5;
-  }
-
-  // Summary cards
-  const summaryEl = document.getElementById('summaryCards');
-  if (summaryEl) {
-    const hS = await captureEl(summaryEl, yPos, 40);
-    yPos += hS + 5;
-  }
-
-  // Gráfico
-  const chartEl = document.getElementById('mainChart');
-  if (chartEl) {
-    const chartWrap = chartEl.parentElement;
-    const hC = await captureEl(chartWrap, yPos, pH - yPos - 14);
-    yPos += hC;
-  }
-
-  // Rodapé p1
-  pdf.setFontSize(7); pdf.setTextColor(160); pdf.setFont('helvetica','normal');
-  pdf.text('Página 1 de 2', pW - margin, pH - 5, { align:'right' });
-
-  // ── PÁGINA 2: tabela ─────────────────────────────────────────────────
+  addCanvasToPDF(canvas1, 1, 2);
   pdf.addPage();
-  pdf.setFillColor(200, 16, 46);
-  pdf.rect(0, 0, pW, 18, 'F');
-  pdf.setFontSize(11); pdf.setFont('helvetica','bold'); pdf.setTextColor(255,255,255);
-  pdf.text('Predições Detalhadas — Trajetória de 72 Semanas', margin, 12);
-  pdf.setFontSize(7.5); pdf.setFont('helvetica','normal');
-  pdf.text(`Gerado em ${dateStr}`, pW - margin, 12, { align:'right' });
-
-  const tableEl = document.getElementById('tableCard');
-  if (tableEl) {
-    await captureEl(tableEl, 22, pH - 36);
-  }
-  pdf.setFontSize(7); pdf.setTextColor(160);
-  pdf.text('Página 2 de 2', pW - margin, pH - 5, { align:'right' });
+  addCanvasToPDF(canvas2, 2, 2);
 
   pdf.save(`predicao-tirzepatida-${dateStr.replace(/\//g,'-')}.pdf`);
+
   btn.textContent = origText;
   btn.disabled = false;
 }
