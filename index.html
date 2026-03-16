@@ -490,31 +490,32 @@ function renderResults(s) {
       <div class="stat-sub">kg/m² · mediana</div>
     </div>`;
 
-  // ── TABELA ─────────────────────────────────────────────────────────
+  // ── TABELA — fases de titulação dinâmicas por dose ────────────────
   const rows = predictions.filter(p => TABLE_WEEKS.includes(p.week));
-  const PHASES = {
-    0:{label:'Baseline',bg:'#f3f4f6',color:'#6b7280'},
-    4:{label:'Titulação',bg:'#fefce8',color:'#854d0e'},
-    8:{label:'Titulação',bg:'#fefce8',color:'#854d0e'},
-    12:{label:'Titulação',bg:'#fefce8',color:'#854d0e'},
-    24:{label:'Resposta Precoce',bg:'#eff6ff',color:'#1d4ed8'},
-    36:{label:'Manutenção',bg:'#f0fdf4',color:'#166534'},
-    52:{label:'Manutenção',bg:'#f0fdf4',color:'#166534'},
-    72:{label:'Longo Prazo',bg:'#dcfce7',color:'#14532d'},
-  };
-  const CHECKPOINTS = {
-    12: { badge: '🏁 1º Checkpoint', bg:'#fdf4ff', border:'#e879f9', color:'#86198f' },
-    24: { badge: '🏁 2º Checkpoint', bg:'#fdf4ff', border:'#e879f9', color:'#86198f' },
-  };
+
+  // Titulação:
+  //   5mg  → titulação até semana 8  (início 2.5mg → 5mg), manutenção a partir da sem. 12
+  //   10mg → titulação até semana 16 (2.5→5→7.5→10mg), manutenção a partir da sem. 20
+  //          Como TABLE_WEEKS=[0,4,8,12,24,36,52,72], semanas 4,8,12 = titulação
+  //   15mg → titulação até semana 20 (2.5→5→7.5→10→12.5→15mg), sem. 4,8,12,24 = titulação
+  //          Na prática: semanas ≤ 20 = titulação; mas TABLE_WEEKS não tem sem.20
+  //          então: 4,8,12 = titulação; 24 = última semana de ajuste / início manutenção
+  const titulacaoAte = { 5: 8, 10: 16, 15: 20 };
+  const cutoff = titulacaoAte[lastState.dose] || 8;
+
+  function getPhase(week, dose) {
+    if (week === 0) return {label:'Baseline', bg:'#f3f4f6', color:'#6b7280'};
+    if (week <= cutoff) return {label:'Titulação', bg:'#fefce8', color:'#854d0e'};
+    if (week <= 36) return {label:'Manutenção', bg:'#f0fdf4', color:'#166534'};
+    if (week <= 52) return {label:'Manutenção', bg:'#f0fdf4', color:'#166534'};
+    return {label:'Longo Prazo', bg:'#dcfce7', color:'#14532d'};
+  }
+
   document.getElementById('predTbody').innerHTML = rows.map(p => {
-    const ph = PHASES[p.week] || {label:'',bg:'#fff',color:'#374151'};
-    const cp = CHECKPOINTS[p.week];
+    const ph = getPhase(p.week, lastState.dose);
     const weekLabel = p.week===0 ? 'Baseline' : `Semana ${p.week}`;
-    const cpBadge = cp
-      ? `<span style="display:inline-block;margin-left:6px;background:${cp.bg};border:1px solid ${cp.border};color:${cp.color};border-radius:10px;padding:1px 7px;font-size:.66rem;font-weight:700;vertical-align:middle;">${cp.badge}</span>`
-      : '';
     return `<tr>
-      <td>${weekLabel}${cpBadge}</td>
+      <td>${weekLabel}</td>
       <td>${p.weight.toFixed(1)}</td>
       <td>${p.bmi.toFixed(1)}</td>
       <td class="td-loss">${p.twl.toFixed(1)}%</td>
@@ -584,7 +585,110 @@ function renderChart(predictions, mode, currentPoint) {
   // Abordagem: annotation via anotação no plugin — mas sem plugin, vamos
   // usar um ponto vermelho inserido na série mediana na posição interpolada
 
+  // Plugin: linhas tracejadas âmbar + labels nos eixos X e Y
+  const verticalLinePlugin = {
+    id: 'verticalMarker',
+    afterDraw(chart) {
+      if (!currentPoint) return;
+      const cp = currentPoint;
+      const wks = cp.weeksElapsed;
+      const WEEKS_ALL = [0,4,8,12,20,24,36,48,60,72];
+
+      // ── Posição X interpolada ────────────────────────────────────────
+      let idxLeft = 0;
+      for (let i = 0; i < WEEKS_ALL.length - 1; i++) {
+        if (WEEKS_ALL[i] <= wks && wks <= WEEKS_ALL[i+1]) { idxLeft = i; break; }
+      }
+      const idxRight = Math.min(idxLeft + 1, WEEKS_ALL.length - 1);
+      const wL = WEEKS_ALL[idxLeft], wR = WEEKS_ALL[idxRight];
+      const frac = wR > wL ? (wks - wL) / (wR - wL) : 0;
+
+      const xScale = chart.scales['x'];
+      const yScale = chart.scales['y'];
+      if (!xScale || !yScale) return;
+
+      const xPixelLeft  = xScale.getPixelForValue(idxLeft);
+      const xPixelRight = xScale.getPixelForValue(idxRight);
+      const xPixel = xPixelLeft + (xPixelRight - xPixelLeft) * frac;
+
+      // ── Valor Y ──────────────────────────────────────────────────────
+      const hasActual = cp.actualWeight !== undefined;
+      const yVal = mode === 'weight'
+        ? (hasActual ? cp.actualWeight : cp.wExpected)
+        : (hasActual ? cp.actualTWL    : cp.twlExpected);
+      const yPixel  = yScale.getPixelForValue(yVal);
+      const yBottom = yScale.bottom;
+      const yTop    = yScale.top;
+      const yAxisX  = yScale.left;
+
+      const c = chart.ctx;
+      const AMBER = '#f59e0b';
+
+      // ── 1. Linha tracejada VERTICAL: ponto → eixo X ──────────────────
+      c.save();
+      c.beginPath();
+      c.setLineDash([4, 4]);
+      c.strokeStyle = AMBER;
+      c.lineWidth = 1.5;
+      c.moveTo(xPixel, yPixel + 8);
+      c.lineTo(xPixel, yBottom);
+      c.stroke();
+      c.restore();
+
+      // Label X âmbar — posicionado no meio da área entre yBottom e xScale.bottom
+      // xScale.bottom inclui o espaço total dos ticks + título do eixo X.
+      // O meio dessa área é onde os ticks normais ficam visualmente.
+      // Colocamos ABAIXO dessa faixa: pegamos 75% do caminho até xScale.bottom.
+      const xScaleBottom = xScale.bottom;
+      const tickMidY = yBottom + (xScaleBottom - yBottom) * 0.45;
+      c.save();
+      c.setLineDash([]);
+      c.font = 'bold 11px "DM Sans", sans-serif';
+      c.fillStyle = AMBER;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText(`S${wks.toFixed(1)}`, xPixel, tickMidY);
+      c.restore();
+
+      // ── 2. Linha tracejada HORIZONTAL curta: eixo Y → ponto ──────────
+      c.save();
+      c.beginPath();
+      c.setLineDash([3, 3]);
+      c.strokeStyle = AMBER;
+      c.lineWidth = 1;
+      c.moveTo(yAxisX, yPixel);
+      c.lineTo(xPixel - 8, yPixel);
+      c.stroke();
+      c.restore();
+
+      // Label Y âmbar — alinhado aos ticks do eixo Y com fundo branco
+      const yLabelText = mode === 'weight'
+        ? `${yVal.toFixed(1)} kg`
+        : `${yVal.toFixed(1)}%`;
+
+      c.save();
+      c.beginPath();
+      c.rect(0, 0, chart.canvas.width, chart.canvas.height);
+      c.clip();
+      c.setLineDash([]);
+      c.font = 'bold 11px "DM Sans", sans-serif';
+      c.textAlign = 'right';
+      c.textBaseline = 'middle';
+      const tw = c.measureText(yLabelText).width;
+      // Alinha com os ticks: eles terminam em yAxisX com textAlign right
+      const lx = yAxisX - 4;
+      // Fundo branco generoso para cobrir completamente o tick original
+      c.fillStyle = '#ffffff';
+      c.fillRect(0, yPixel - 10, lx + 2, 20);
+      // Texto âmbar
+      c.fillStyle = AMBER;
+      c.fillText(yLabelText, lx, yPixel);
+      c.restore();
+    }
+  };
+
   chartInstance = new Chart(ctx, {
+    plugins: [verticalLinePlugin],
     type: 'line',
     data: {
       labels,
@@ -622,50 +726,63 @@ function renderChart(predictions, mode, currentPoint) {
           pointBorderColor: '#fff', pointBorderWidth: 2,
           tension: .4, order: 1
         },
-        // Ponto real do paciente — série separada para aparecer na legenda e tooltip
+        // Ponto real do paciente na posição EXATA (interpolada no eixo X)
         ...(currentPoint ? (() => {
           const hasActual = currentPoint.actualWeight !== undefined;
-          const pointColor = hasActual
-            ? (currentPoint.diffFromMedian >= 1 ? '#16a34a' : currentPoint.diffFromMedian <= -1 ? '#ea580c' : '#2563eb')
-            : '#374151';
-
-          // Encontrar índice mais próximo para inserir o ponto
           const wks = currentPoint.weeksElapsed;
           const WEEKS_ALL = [0,4,8,12,20,24,36,48,60,72];
-          // Criar array com NaN em tudo exceto posição interpolada
-          // Usamos um dataset "scatter" simulado com uma linha vazia + 1 ponto
           const yVal = mode === 'weight'
             ? (hasActual ? currentPoint.actualWeight : currentPoint.wExpected)
             : (hasActual ? currentPoint.actualTWL    : currentPoint.twlExpected);
 
-          // Interpolar posição X no array de labels (0-9)
-          let nearestIdx = 0;
-          let minDist = Infinity;
-          WEEKS_ALL.forEach((w,i) => { const d = Math.abs(w-wks); if(d<minDist){minDist=d;nearestIdx=i;} });
+          // ── Interpolação linear da posição X entre os dois timepoints vizinhos ──
+          let idxLeft = 0, idxRight = WEEKS_ALL.length - 1;
+          for (let i = 0; i < WEEKS_ALL.length - 1; i++) {
+            if (WEEKS_ALL[i] <= wks && wks <= WEEKS_ALL[i+1]) {
+              idxLeft = i; idxRight = i + 1; break;
+            }
+          }
+          const wL = WEEKS_ALL[idxLeft], wR = WEEKS_ALL[idxRight];
+          // Fração entre os dois labels (0 = colado no esquerdo, 1 = colado no direito)
+          const frac = wR > wL ? (wks - wL) / (wR - wL) : 0;
+          // Posição X real no espaço do gráfico (índice fracionário)
+          const xPos = idxLeft + frac;
 
-          const pointData = WEEKS_ALL.map((_,i) => i===nearestIdx ? +yVal.toFixed(2) : null);
-
-          // Marcador âmbar — mesmo tamanho das bolinhas da curva principal
           const markerColor = '#f59e0b';
-          return [{
-            label: 'Peso atual',
-            data: pointData,
-            fill: false,
-            borderColor: 'transparent',
-            backgroundColor: markerColor,
-            pointBackgroundColor: markerColor,
-            pointBorderColor: '#fff',
-            pointBorderWidth: 2.5,
-            pointRadius: WEEKS_ALL.map((_,i) => i===nearestIdx ? 6 : 0),
-            pointHoverRadius: WEEKS_ALL.map((_,i) => i===nearestIdx ? 9 : 0),
-            pointStyle: 'circle',
-            spanGaps: false,
-            order: 0
-          }];
+
+          // ── Dataset da linha vertical pontilhada (do ponto até o eixo X) ──
+          // Obtemos o yMin da escala depois do render via plugin customizado
+          // Usamos dois pontos: (xPos, yVal) e (xPos, yMin)
+          // Como não temos acesso ao yMin aqui, usamos um valor muito baixo
+          // e deixamos o clip do chart cortar naturalmente
+          const vertLineData = WEEKS_ALL.map((_, i) => null);
+          // Injetamos os dois extremos nos índices vizinhos com interpolação manual
+          // A linha vertical é desenhada via afterDraw plugin abaixo
+
+          return [
+            // Marcador âmbar na posição exata interpolada
+            {
+              label: 'Peso atual',
+              data: [{ x: xPos, y: +yVal.toFixed(2) }],
+              type: 'scatter',
+              fill: false,
+              borderColor: 'transparent',
+              backgroundColor: markerColor,
+              pointBackgroundColor: markerColor,
+              pointBorderColor: '#fff',
+              pointBorderWidth: 2.5,
+              pointRadius: 6,
+              pointHoverRadius: 9,
+              pointStyle: 'circle',
+              order: 0,
+              xAxisID: 'xFrac'   // eixo X fracionário oculto
+            }
+          ];
         })() : [])
       ]
     },
     options: {
+      clip: false,
       responsive: true, maintainAspectRatio: false,
       interaction: { mode:'index', intersect:false },
       plugins: {
@@ -674,18 +791,18 @@ function renderChart(predictions, mode, currentPoint) {
           labels: {
             usePointStyle: true, pointStyle: 'line',
             font: { family:"'DM Sans',sans-serif", size:12 },
-            color: '#4c4b7a', padding: 18,
+            color: '#111827', padding: 18,
             filter: item => !item.text.startsWith('IIQ'),
             generateLabels: chart => {
               const ds = chart.data.datasets;
               const out = [];
               // Mediana
-              out.push({ text: ds[2].label, strokeStyle:lineCol, fillStyle:lineCol, lineWidth:2.5, pointStyle:'line', hidden:false, datasetIndex:2 });
+              out.push({ text: ds[2].label, strokeStyle:lineCol, fillStyle:lineCol, lineWidth:2.5, pointStyle:'line', hidden:false, datasetIndex:2, fontColor:'#111827' });
               // Banda IIQ
-              out.push({ text:'Banda IIQ (P25–P75)', strokeStyle:dashCol, fillStyle:bandCol, lineWidth:1.6, lineDash:[6,4], pointStyle:'line', hidden:false, datasetIndex:0 });
+              out.push({ text:'Banda IIQ (P25–P75)', strokeStyle:dashCol, fillStyle:bandCol, lineWidth:1.6, lineDash:[6,4], pointStyle:'line', hidden:false, datasetIndex:0, fontColor:'#111827' });
               // Ponto atual (se existe)
               if (currentPoint) {
-                out.push({ text: 'Peso atual', strokeStyle:'#f59e0b', fillStyle:'#f59e0b', lineWidth:0, pointStyle:'circle', hidden:false, datasetIndex:3 });
+                out.push({ text: 'Peso atual', strokeStyle:'#f59e0b', fillStyle:'#f59e0b', lineWidth:0, pointStyle:'circle', hidden:false, datasetIndex:3, fontColor:'#111827' });
               }
               return out;
             }
@@ -723,10 +840,19 @@ function renderChart(predictions, mode, currentPoint) {
           title:{display:true,text:'Semanas de Tratamento',font:{family:"'DM Sans'",size:11},color:'#9ca3af'},
           ticks:{font:{family:"'DM Sans',sans-serif",size:11},color:'#9ca3af'}
         },
+        // Eixo X fracionário oculto para posicionar o marcador na posição exata
+        xFrac: {
+          type: 'linear',
+          display: false,
+          min: 0,
+          max: 9,   // 10 pontos → índices 0–9
+          grid: { display: false }
+        },
         y: {
           grid:{color:'rgba(0,0,0,.04)'},
           title:{display:true,text:yLabel,font:{family:"'DM Sans'",size:11},color:'#9ca3af'},
-          ticks:{font:{family:"'DM Sans',sans-serif",size:11},color:'#9ca3af',callback:v=>v.toFixed(0)+(mode==='weight'?' kg':'%')}
+          ticks:{font:{family:"'DM Sans',sans-serif",size:11},color:'#9ca3af',callback:v=>v.toFixed(0)+(mode==='weight'?' kg':'%')},
+          afterFit(axis) { axis.width = Math.max(axis.width, 68); }
         }
       }
     }
